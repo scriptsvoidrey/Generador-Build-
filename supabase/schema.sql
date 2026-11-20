@@ -1,0 +1,10 @@
+create extension if not exists pgcrypto;
+create table if not exists public.builds(id uuid primary key default gen_random_uuid(),user_id uuid not null references auth.users(id) on delete cascade,app_name text not null,package_name text not null,version_name text not null,version_code integer not null,content_type text not null check(content_type in('url','html','zip','code')),source_path text,apk_path text,status text not null default 'queued' check(status in('queued','preparing','building','completed','error')),error_message text,created_at timestamptz not null default now(),updated_at timestamptz not null default now());
+alter table public.builds enable row level security;
+create policy "read own builds" on public.builds for select using(auth.uid()=user_id);
+create policy "insert own builds" on public.builds for insert with check(auth.uid()=user_id);
+insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types) values('sources','sources',false,52428800,array['text/html','application/zip','application/x-zip-compressed']) on conflict(id) do nothing;
+insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types) values('apks','apks',false,104857600,array['application/vnd.android.package-archive']) on conflict(id) do nothing;
+create policy "upload own sources" on storage.objects for insert to authenticated with check(bucket_id='sources' and (storage.foldername(name))[1]=auth.uid()::text);
+create policy "read own sources" on storage.objects for select to authenticated using(bucket_id='sources' and (storage.foldername(name))[1]=auth.uid()::text);
+create policy "read own apk" on storage.objects for select to authenticated using(bucket_id='apks' and exists(select 1 from public.builds b where b.apk_path=name and b.user_id=auth.uid()));
