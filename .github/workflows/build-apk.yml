@@ -1,0 +1,82 @@
+name: Build APK
+on:
+  workflow_dispatch:
+    inputs:
+      build_id: {required: true, type: string}
+      app_name: {required: true, type: string}
+      package_name: {required: true, type: string}
+      version_name: {required: true, type: string}
+      version_code: {required: true, type: string}
+      content_type: {required: true, type: string}
+      source_url: {required: false, type: string}
+      web_url: {required: false, type: string}
+permissions: {contents: read}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/setup-node@v4
+        with: {node-version: '20'}
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v3
+      - name: Prepare web project
+        env:
+          SOURCE_URL: ${{ inputs.source_url }}
+          WEB_URL: ${{ inputs.web_url }}
+          KIND: ${{ inputs.content_type }}
+          APP: ${{ inputs.app_name }}
+          PACKAGE: ${{ inputs.package_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p work/www
+          if [ "$KIND" = url ]; then
+            node -e 'const fs=require("fs");const u=process.env.WEB_URL;if(!/^https?:\\/\\//i.test(u))throw Error("URL inválida");fs.writeFileSync("work/www/index.html","<!doctype html><meta name=viewport content=width=device-width,initial-scale=1><iframe src="+JSON.stringify(u)+" style=border:0;width:100vw;height:100vh></iframe>")'
+          else
+            curl --fail --location --silent --show-error "$SOURCE_URL" -o /tmp/input
+            if [ "$KIND" = zip ]; then
+              python3 - <<'PY'
+          import zipfile,os
+          z=zipfile.ZipFile('/tmp/input'); root=os.path.realpath('work/www')
+          for x in z.infolist():
+            p=os.path.realpath(os.path.join(root,x.filename))
+            if p!=root and not p.startswith(root+os.sep): raise Exception('ZIP path traversal')
+            if x.is_dir(): os.makedirs(p,exist_ok=True)
+            else:
+              os.makedirs(os.path.dirname(p),exist_ok=True)
+              with z.open(x) as a,open(p,'wb') as b: b.write(a.read())
+          PY
+            else cp /tmp/input work/www/index.html; fi
+          fi
+          if [ ! -f work/www/index.html ]; then f=$(find work/www -name index.html -print -quit); test -n "$f" || (echo 'Falta index.html';exit 1); cp "$f" work/www/index.html; fi
+          cd work
+          printf '{"name":"nexa-builder","version":"1.0.0","private":true,"dependencies":{"@capacitor/core":"^6.2.0","@capacitor/android":"^6.2.0"},"devDependencies":{"@capacitor/cli":"^6.2.0"}}' > package.json
+          node -e 'require("fs").writeFileSync("capacitor.config.json",JSON.stringify({appId:process.env.PACKAGE,appName:process.env.APP,webDir:"www"}))'
+      - name: Compile APK
+        run: |
+          cd work
+          npm install --no-audit --no-fund
+          npx cap add android
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+      - name: Upload APK to private Supabase storage
+        if: success()
+        env:
+          URL: ${{ secrets.SUPABASE_URL }}
+          KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ID: ${{ inputs.build_id }}
+        run: |
+          set -e
+          curl --fail --silent --show-error -X POST "$URL/storage/v1/object/apks/$ID/app-debug.apk" -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Content-Type: application/vnd.android.package-archive" -H "x-upsert: true" --data-binary @work/android/app/build/outputs/apk/debug/app-debug.apk
+          curl --fail --silent --show-error -X PATCH "$URL/rest/v1/builds?id=eq.$ID" -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -H "Prefer: return=minimal" -d '{"status":"completed","apk_path":"'$ID'/app-debug.apk"}'
+      - name: Mark failed
+        if: failure()
+        env:
+          URL: ${{ secrets.SUPABASE_URL }}
+          KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ID: ${{ inputs.build_id }}
+        run: |
+          curl --silent --show-error -X PATCH "$URL/rest/v1/builds?id=eq.$ID" -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"status":"error","error_message":"La compilación falló. Consulta los registros del workflow."}'
