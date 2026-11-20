@@ -10,7 +10,8 @@ on:
       content_type: {required: true, type: string}
       source_url: {required: false, type: string}
       web_url: {required: false, type: string}
-permissions: {contents: read}
+permissions:
+  contents: read
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,6 +22,13 @@ jobs:
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: '17'}
       - uses: android-actions/setup-android@v3
+      - name: Mark preparing
+        env:
+          URL: ${{ secrets.SUPABASE_URL }}
+          KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ID: ${{ inputs.build_id }}
+        run: |
+          curl --fail --silent --show-error -X PATCH "$URL/rest/v1/builds?id=eq.$ID" -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"status":"preparing"}'
       - name: Prepare web project
         env:
           SOURCE_URL: ${{ inputs.source_url }}
@@ -32,7 +40,7 @@ jobs:
           set -euo pipefail
           mkdir -p work/www
           if [ "$KIND" = url ]; then
-            node -e 'const fs=require("fs");const u=process.env.WEB_URL;if(!/^https?:\\/\\//i.test(u))throw Error("URL inválida");fs.writeFileSync("work/www/index.html","<!doctype html><meta name=viewport content=width=device-width,initial-scale=1><iframe src="+JSON.stringify(u)+" style=border:0;width:100vw;height:100vh></iframe>")'
+            node -e 'const fs=require("fs");const u=new URL(process.env.WEB_URL);if(!["http:","https:"].includes(u.protocol))throw Error("URL inválida");fs.writeFileSync("work/www/index.html","<!doctype html><meta name=viewport content=width=device-width,initial-scale=1><iframe src="+JSON.stringify(u.href)+" style=border:0;width:100vw;height:100vh></iframe>")'
           else
             curl --fail --location --silent --show-error "$SOURCE_URL" -o /tmp/input
             if [ "$KIND" = zip ]; then
@@ -47,12 +55,21 @@ jobs:
               os.makedirs(os.path.dirname(p),exist_ok=True)
               with z.open(x) as a,open(p,'wb') as b: b.write(a.read())
           PY
-            else cp /tmp/input work/www/index.html; fi
+            else
+              cp /tmp/input work/www/index.html
+            fi
           fi
           if [ ! -f work/www/index.html ]; then f=$(find work/www -name index.html -print -quit); test -n "$f" || (echo 'Falta index.html';exit 1); cp "$f" work/www/index.html; fi
           cd work
           printf '{"name":"nexa-builder","version":"1.0.0","private":true,"dependencies":{"@capacitor/core":"^6.2.0","@capacitor/android":"^6.2.0"},"devDependencies":{"@capacitor/cli":"^6.2.0"}}' > package.json
           node -e 'require("fs").writeFileSync("capacitor.config.json",JSON.stringify({appId:process.env.PACKAGE,appName:process.env.APP,webDir:"www"}))'
+      - name: Mark building
+        env:
+          URL: ${{ secrets.SUPABASE_URL }}
+          KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ID: ${{ inputs.build_id }}
+        run: |
+          curl --fail --silent --show-error -X PATCH "$URL/rest/v1/builds?id=eq.$ID" -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"status":"building"}'
       - name: Compile APK
         run: |
           cd work
