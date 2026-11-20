@@ -1,0 +1,1 @@
+import type{VercelRequest,VercelResponse}from'@vercel/node';export default function handler(_req:VercelRequest,res:VercelResponse){res.setHeader('Cache-Control','no-store');return res.status(200).json({supabaseUrl:process.env.SUPABASE_URL||'',supabaseAnonKey:process.env.SUPABASE_ANON_KEY||''})}
